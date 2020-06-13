@@ -1,6 +1,6 @@
 # mac_apt
 macOS Artifact Parsing Tool   
-[![Latest version](https://img.shields.io/badge/version-v0.5-blue)](https://github.com/ydkhatri/mac_apt/releases/tag/v0.5-beta)
+[![Latest version](https://img.shields.io/badge/version-v0.6-blue)](https://github.com/ydkhatri/mac_apt/releases/tag/v0.6-beta)
 [![status](https://img.shields.io/badge/status-beta-red)]()
 
 mac_apt is a DFIR tool to process Mac computer full disk images (**or _live_ machines**) and extract data/metadata useful for forensic investigation. It is a python based framework, which has plugins to process individual artifacts (such as Safari internet history, Network interfaces, Recently accessed files & volumes, ..)
@@ -18,18 +18,20 @@ mac_apt is a DFIR tool to process Mac computer full disk images (**or _live_ mac
 * Reads the Spotlight database and Unified Logging (tracev3) files
 
 #### Latest
-:heavy_check_mark: FAST mode
-:heavy_check_mark: macOS Catalina (10.15) images can be parsed now.  
-:heavy_check_mark: macOS Catalina (10.15) separately mounted SYSTEM & DATA volumes now supported.  
-:heavy_check_mark: AFF4 images (_of unencrypted APFS volumes_) now supported
+:heavy_check_mark: FAST mode :hourglass_flowing_sand:   
+:heavy_check_mark: Encrypted :lock: APFS images can now be processed using password/recovery-key :key:   
+:heavy_check_mark: macOS Catalina (10.15) images can be parsed now  
+:heavy_check_mark: macOS Catalina (10.15) separately mounted SYSTEM & DATA volumes now supported  
+:heavy_check_mark: AFF4 images (including maquisition created) now supported
 
 Available Plugins (artifacts parsed) | Description 
 ------------------ | ---------------
 APPLIST | Reads apps & printers installed and/or available for each user from appList.dat
+ARD | Reads ARD (Apple Remote Desktop) cached databases about app usage
 AUTOSTART | Retrieves programs, daemons, services set to start at boot/login
-BASHSESSIONS | Reads bash (Terminal) sessions & history for every user
 BASICINFO | Basic machine & OS configuration like SN, timezone, computer name, last logged in user, HFS info
 BLUETOOTH | Gets Bluetooth Artifacts
+CHROME | Read Chrome History, Top Sites, Downloads and Extension info
 COOKIES | Reads .binarycookies, .cookies files and HSTS.plist for each user
 DOCKITEMS | Reads the Dock plist for every user
 DOMAINS | Active Directory Domain(s) that the mac is connected to
@@ -49,10 +51,13 @@ QUARANTINE | Reads the quarantine database and .LastGKReject file
 QUICKLOOK | Reads the QuickLook index.sqlite and carves thumbnails from thumbnails.data
 RECENTITEMS | Recently accessed Servers, Documents, Hosts, Volumes & Applications from .plist and .sfl files. Also gets recent searches and places for each user
 SAFARI | Internet history, downloaded file information, cookies and more from Safari caches
+SAVEDSTATE | Gets window titles from Saved Application State info
 SCREENTIME | Reads ScreenTime database for program and app usage
 SPOTLIGHT | Reads the spotlight index databases
 SPOTLIGHTSHORTCUTS | User typed data in the spotlight bar & targeted document/app
+SUDOLASTRUN | Gets last time sudo was used and a few other times earlier (if available)
 TERMINALSTATE | Reads Terminal saved state files which includes full text content of terminal windows
+TERMSESSIONS | Reads Terminal (bash & zsh) history & sesions for every user
 UNIFIEDLOGS | Reads macOS unified logging logs from .tracev3 files
 USERS | Local & Domain user information - name, UID, UUID, GID, account creation & password set dates, pass hints, homedir & Darwin paths
 WIFI | Gets wifi network information
@@ -60,7 +65,6 @@ WIFI | Gets wifi network information
 ### Coming soon..
 * More plugins
 * More documentation
-* APFS Encryption support
 
 For installation (to run from code) see https://github.com/ydkhatri/mac_apt/wiki/Installation-for-Python3.7  
 **Please read the documentation here:** https://github.com/ydkhatri/mac_apt/wiki

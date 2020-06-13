@@ -48,7 +48,7 @@ class OutputParams:
         self.output_db_path = ''
         self.export_path = '' # For artifact source files
         self.export_path_rel = '' # Relative export path
-        self.export_log_csv = None
+        self.export_log_sqlite = None
         self.timezone = TimeZoneType.UTC
 
 class UserInfo:
@@ -153,7 +153,7 @@ class NativeHfsParser:
                         "\nException details: " + str(ex))
         return 0
 
-    def OpenSmallFile(self, path):
+    def Open(self, path):
         '''Open files, returns open file handle'''
         if not self.initialized:
             raise ValueError("Volume not loaded (initialized)!")
@@ -161,31 +161,27 @@ class NativeHfsParser:
             log.debug("Trying to open file : " + path)
             size = self.GetFileSize(path)
             if size > 209715200:
-                log.warning('File size > 200 MB, may crash! File size is {} bytes'.format(size))
-            data = self.volume.readFile(path)
-            f = tempfile.SpooledTemporaryFile(max_size=size)
-            f.write(data)
+                log.warning('File size > 200 MB. File size is {} bytes'.format(size))
+            f = tempfile.SpooledTemporaryFile(max_size=209715200)
+            self.volume.readFile(path, f)
             f.seek(0)
             return f
-        except (OSError, IOError) as ex:
+        except (OSError, ValueError) as ex:
             log.exception("NativeHFSParser->Failed to open file {} Error was {}".format(path, str(ex)))
 
         return None
 
     def ExtractFile(self, path, extract_to_path):
-        '''
-           Extract file, returns True or False
-           This only works on small files currently!
-        '''
+        '''Extract file, returns True or False'''
         if not self.initialized:
             raise ValueError("Volume not loaded!")
         try:
             log.debug("Trying to export file : " + path + " to " + extract_to_path)
             with open(extract_to_path, "wb") as f:
-                data = self.volume.readFile(path, f)
+                self.volume.readFile(path, f)
                 f.close()
                 return True
-        except ValueError as ex:
+        except (ValueError, OSError) as ex:
             log.exception("NativeHFSParser->Failed to export file {} to {}".format(path, extract_to_path))
         return False
 
@@ -291,7 +287,7 @@ class NativeHfsParser:
                     log.error("Can't get dir listing as this is not a folder : " + path)
             else:
                 log.error('Path not found : ' + path)
-        except:
+        except (KeyError, ValueError, TypeError, OSError):
             log.error('Error trying to get file list from folder: ' + path)
             log.exception('')
         return items
@@ -311,7 +307,7 @@ class NativeHfsParser:
 
 class MacInfo:
 
-    def __init__(self, output_params, password='', recovery_key=''):
+    def __init__(self, output_params, password=''):
         #self.Partitions = {}   # Dictionary of all partition objects returned from pytsk LATER! 
         self.pytsk_image = None
         self.macos_FS = None      # Just the FileSystem object (fs) from OSX partition
@@ -330,7 +326,6 @@ class MacInfo:
         self.is_linux = (sys.platform == 'linux')
         # for encrypted volumes
         self.password = password
-        self.recovery_key = recovery_key
 
     # Public functions, plugins can use these
     def GetAbsolutePath(self, current_abs_path, dest_rel_path):
@@ -414,23 +409,24 @@ class MacInfo:
         try:
             if not os.path.exists(export_path):
                 os.makedirs(export_path)
-        except Exception as ex:
+        except (KeyError, ValueError, TypeError, OSError) as ex:
             log.error ("Exception while creating Export folder " + export_path + "\n Is output folder Writeable?" +
                        "Is it full? Perhaps the drive is disconnected? Exception Details: " + str(ex))
             return False
         # recursively export files/folders
         try:
             return self._ExportFolder(artifact_path, export_path, overwrite)
-        except:
+        except (KeyError, ValueError, TypeError, OSError):
             log.exception('Exception while exporting folder ' + artifact_path)
         return False
 
     def _ExportFolder(self, artifact_path, export_path, overwrite):
         '''Exports files/folders from artifact_path to export_path recursively'''
+        artifact_path = artifact_path.rstrip('/')
         entries = self.ListItemsInFolder(artifact_path, EntryType.FILES_AND_FOLDERS, True)
         ret = True
         for entry in entries:
-            new_path = os.path.join(export_path, entry['name'])
+            new_path = os.path.join(export_path, self._GetSafeFilename(entry['name']))
             if entry['type'] == EntryType.FOLDERS:
                 try:
                     if not os.path.exists(new_path):
@@ -441,7 +437,10 @@ class MacInfo:
                     continue
                 ret &= self._ExportFolder(artifact_path + '/' + entry['name'], new_path, overwrite)
             else: # FILE
-                ret &= self._ExtractFile(artifact_path + '/' + entry['name'], new_path, entry['dates'])
+                if entry['size'] > 0:
+                    ret &= self._ExtractFile(artifact_path + '/' + entry['name'], new_path, entry['dates'])
+                else:
+                    log.info('Skipping export of {} as filesize=0'.format(artifact_path + '/' + entry['name']))
         return ret
 
     def ExportFile(self, artifact_path, subfolder_name, file_prefix='', check_for_sqlite_files=True, overwrite=False):
@@ -492,7 +491,7 @@ class MacInfo:
             export_path_rel = os.path.relpath(export_path, start=self.output_params.export_path)
             if self.is_windows:
                 export_path_rel = export_path_rel.replace('\\', '/')
-            self.output_params.export_log_csv.WriteRow([artifact_path, export_path_rel, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
+            self.output_params.export_log_sqlite.WriteRow([artifact_path, export_path_rel, mac_times['c_time'], mac_times['m_time'], mac_times['cr_time'], mac_times['a_time']])
             return True
         else:
             log.info("Failed to export '" + artifact_path + "' to '" + export_path + "'")
@@ -508,7 +507,7 @@ class MacInfo:
         log.debug("Trying to open plist file : " + path)
         error = ''
         try:
-            f = self.OpenSmallFile(path)
+            f = self.Open(path)
             if f != None:
                 try:
                     log.debug("Trying to read plist file : " + path)
@@ -531,7 +530,7 @@ class MacInfo:
                         # that has left whitespaces at the start of file before <?xml tag
                         # This is assuming XML format!
                         f.seek(0)
-                        data = f.read().decode('utf8')
+                        data = f.read().decode('utf8', 'ignore')
                         f.close()
                         data = data.lstrip(" \r\n\t").encode('utf8', 'backslashreplace')
                         if deserialize:
@@ -545,7 +544,7 @@ class MacInfo:
                         else:
                             plist = biplist.readPlistFromString(data)                        
                             return (True, plist, '')
-                    except biplist.InvalidPlistException as ex:
+                    except (biplist.InvalidPlistException, biplist.NotBinaryPlistException) as ex:
                         error = 'Could not read plist: ' + path + " Error was : " + str(ex)
                 except IOError as ex:
                     error = 'IOError while reading plist: ' + path + " Error was : " + str(ex)
@@ -563,7 +562,7 @@ class MacInfo:
 
     def ReadSymLinkTargetPath(self, path):
         '''Returns the target file/folder's path from the sym link path provided'''
-        f = self.OpenSmallFile(path)
+        f = self.Open(path)
         if f:
             target_path = f.read()
             f.close()
@@ -640,10 +639,10 @@ class MacInfo:
                 log.error("Failed to get dir info!")
         return items
 
-    def OpenSmallFile(self, path):
+    def Open(self, path):
         '''Open files less than 200 MB, returns open file handle'''
         if self.use_native_hfs_parser:
-            return self.hfs_native.OpenSmallFile(path)
+            return self.hfs_native.Open(path)
         try:
             log.debug("Trying to open file : " + path)
             tsk_file = self.macos_FS.open(path)
@@ -652,7 +651,7 @@ class MacInfo:
                 raise ValueError('File size > 200 MB, use direct TSK file functions!')
 
             f = tempfile.SpooledTemporaryFile(max_size=209715200)
-            BUFF_SIZE = 1024 * 1024
+            BUFF_SIZE = 20 * 1024 * 1024
             offset = 0
             while offset < size:
                 available_to_read = min(BUFF_SIZE, size - offset)
@@ -664,7 +663,7 @@ class MacInfo:
             return f
         except Exception as ex:
             if str(ex).find('tsk_fs_file_open: path not found:') > 0:
-                log.error("OpenSmallFile() returned 'Path not found' error for path: {}".format(path))
+                log.error("Open() returned 'Path not found' error for path: {}".format(path))
             elif str(ex).find('tsk_fs_attrlist_get: Attribute 4352 not found') > 0 or \
                  (str(ex).find('Read error: Invalid file offset') > 0 and self._IsFileCompressed(tsk_file)) or \
                  str(ex).find('Read error: Error in metadata') > 0:
@@ -673,7 +672,7 @@ class MacInfo:
                 try:
                     if not self.hfs_native.initialized:
                         self.hfs_native.Initialize(self.pytsk_image, self.macos_partition_start_offset)
-                    return self.hfs_native.OpenSmallFile(path)
+                    return self.hfs_native.Open(path)
                 except (IOError, OSError, ValueError):
                     log.error("Failed to open file: " + path)
                     log.debug("Exception details:\n", exc_info=True)
@@ -689,7 +688,7 @@ class MacInfo:
             tsk_file = self.macos_FS.open(tsk_path)
             size = tsk_file.info.meta.size
 
-            BUFF_SIZE = 1024 * 1024
+            BUFF_SIZE = 20 * 1024 * 1024
             offset = 0
             try:
                 with open(destination_path, 'wb') as f:
@@ -727,9 +726,8 @@ class MacInfo:
                 log.debug("Exception details:", exc_info=True)
         except Exception as ex:
             if str(ex).find('tsk_fs_file_open: path not found:') > 0:
-                log.debug("OpenSmallFile() returned 'Path not found' error for path: {}".format(tsk_path))
+                log.debug("Open() returned 'Path not found' error for path: {}".format(tsk_path))
             else:
-                #traceback.print_exc()
                 log.error("Failed to open/find file: " + tsk_path)            
         return False
 
@@ -799,7 +797,7 @@ class MacInfo:
            Eg: Windows does not like ?<>/\:*"! in filename
         '''
         try:
-            unsafe_chars = '?<>/\:*"!' if os.name == 'nt' else '/'
+            unsafe_chars = '?<>/\:*"!\r\n' if self.is_windows else '/'
             return ''.join([c for c in name if c not in unsafe_chars])
         except:
             pass
@@ -811,7 +809,6 @@ class MacInfo:
             return int(tsk_file.info.meta.flags) & pytsk3.TSK_FS_META_FLAG_COMP
         except Exception as ex:
             log.error (" Unknown exception from _IsFileCompressed() " + str(ex))
-            #traceback.print_exc()
         return False
 
     def _GetSize(self, entry):
@@ -820,20 +817,26 @@ class MacInfo:
             return entry.info.meta.size
         except Exception as ex:
             log.error (" Unknown exception from _GetSize() " + str(ex))
-            #traceback.print_exc()
         return 0
 
     def _GetName(self, entry):
         '''Return utf8 filename from pytsk entry object'''
         try:
-            return entry.info.name.name.decode("utf8")
+            return entry.info.name.name.decode("utf8", "ignore")
         except UnicodeError:
             #log.debug("UnicodeError getting name ")
             pass
         except Exception as ex:
             log.error (" Unknown exception from GetName:" + str(ex))
-            #traceback.print_exc()
         return ""
+
+    def _CheckFileContents(self, f):
+        f.seek(0)
+        header = f.read(4)
+        if len(header) == 4 and header == b'\0\0\0\0':
+            log.error('File header was zeroed out. If the source is an E01 file, this may be a libewf problem.'\
+                ' Try to use a different version of libewf. Read more about this here:'\
+                ' https://github.com/ydkhatri/mac_apt/wiki/Known-issues-and-Workarounds')
 
     def _IsValidFileOrFolderEntry(self, entry):
         try:
@@ -845,7 +848,7 @@ class MacInfo:
                 log.warning(" Found invalid entry - " + self._GetName(entry) + "  " + str(entry.info.name.type) )
         except Exception:
             log.error(" Unknown exception from _IsValidFileOrFolderEntry:" + self._GetName(entry))
-            log.debug("Exception details:\n", exc_info=True) #traceback.print_exc()
+            log.debug("Exception details:\n", exc_info=True)
         return False
     
     def _GetDomainUserInfo(self):
@@ -880,7 +883,7 @@ class MacInfo:
             target_user.failed_login_timestamp = plist2.get('failedLoginTimestamp', None)
             target_user.last_login_timestamp = plist2.get('lastLoginTimestamp', None)
             target_user.password_last_set_time = plist2.get('passwordLastSetTime', None)
-        except (InvalidPlistException, NotBinaryPlistException):
+        except (biplist.InvalidPlistException, biplist.NotBinaryPlistException):
             log.exception('Error reading password_policy_data embedded plist')
 
     def _ReadAccountPolicyData(self, account_policy_data, target_user):
@@ -890,7 +893,7 @@ class MacInfo:
             target_user.failed_login_count = plist2.get('failedLoginCount', 0)
             target_user.failed_login_timestamp = CommonFunctions.ReadUnixTime(plist2.get('failedLoginTimestamp', None))
             target_user.password_last_set_time = CommonFunctions.ReadUnixTime(plist2.get('passwordLastSetTime', None))
-        except (InvalidPlistException, NotBinaryPlistException):
+        except (biplist.InvalidPlistException, biplist.NotBinaryPlistException):
             log.exception('Error reading password_policy_data embedded plist')     
 
     def _GetUserInfo(self):
@@ -902,7 +905,7 @@ class MacInfo:
             if plist_meta['size'] > 0:
                 try:
                     user_plist_path = users_path + '/' + plist_meta['name']
-                    f = self.OpenSmallFile(user_plist_path)
+                    f = self.Open(user_plist_path)
                     if f!= None:
                         self.ExportFile(user_plist_path, 'USERS', '', False)
                         try:
@@ -936,10 +939,12 @@ class MacInfo:
                                         self._ReadAccountPolicyData(account_policy_data, target_user)
                             else:
                                 log.error('Did not find \'home\' in ' + plist_meta['name'])
-                        except (InvalidPlistException):
+                        except (biplist.InvalidPlistException, biplist.NotBinaryPlistException):
                             log.exception("biplist failed to read plist " + user_plist_path)
-                except:
-                    log.exception ("Could not open plist " + user_plist_path)
+                            self._CheckFileContents(f)
+                        f.close()
+                except (OSError, KeyError, ValueError, IndexError, TypeError):
+                    log.exception ("Could not open/read plist " + user_plist_path)
         self._GetDomainUserInfo()
         self._GetDarwinFoldersInfo() # This probably does not apply to OSX < Mavericks !
 
@@ -980,7 +985,7 @@ class MacInfo:
             #plist_string = plist_file.read_random(0, plist_file.info.meta.size) # This is a small file, so this is fine!
             #plist = biplist.readPlistFromString(plist_string)
             log.debug("Trying to get system version from /System/Library/CoreServices/SystemVersion.plist")
-            f = self.OpenSmallFile('/System/Library/CoreServices/SystemVersion.plist')
+            f = self.Open('/System/Library/CoreServices/SystemVersion.plist')
             if f != None:
                 try:
                     plist = biplist.readPlist(f)
@@ -993,6 +998,7 @@ class MacInfo:
                         elif self.os_version.startswith('10.13'): self.os_friendly_name = 'High Sierra'
                         elif self.os_version.startswith('10.14'): self.os_friendly_name = 'Mojave'
                         elif self.os_version.startswith('10.15'): self.os_friendly_name = 'Catalina'
+                        elif self.os_version.startswith('10.16'): self.os_friendly_name = '-UNKNOWN-'
                         elif self.os_version.startswith('10.0'): self.os_friendly_name = 'Cheetah'
                         elif self.os_version.startswith('10.1'): self.os_friendly_name = 'Puma'
                         elif self.os_version.startswith('10.2'): self.os_friendly_name = 'Jaguar'
@@ -1005,9 +1011,11 @@ class MacInfo:
                         elif self.os_version.startswith('10.9'): self.os_friendly_name = 'Mavericks'
                         else: self.os_friendly_name = 'Unknown version!'
                     log.info ('macOS version detected is: {} ({}) Build={}'.format(self.os_friendly_name, self.os_version, self.os_build))
+                    f.close()
                     return True
-                except (InvalidPlistException, NotBinaryPlistException) as ex:
+                except (biplist.InvalidPlistException, biplist.NotBinaryPlistException) as ex:
                     log.error ("Could not get ProductVersion from plist. Is it a valid xml plist? Error=" + str(ex))
+                f.close()
             else:
                 log.error("Could not open plist to get system version info!")
         except:
@@ -1015,8 +1023,8 @@ class MacInfo:
         return False
 
 class ApfsMacInfo(MacInfo):
-    def __init__(self, output_params, password, recovery_key):
-        MacInfo.__init__(self, output_params, password, recovery_key)
+    def __init__(self, output_params, password):
+        MacInfo.__init__(self, output_params, password)
         self.apfs_container = None
         self.apfs_db = None
         self.apfs_db_path = ''
@@ -1051,14 +1059,11 @@ class ApfsMacInfo(MacInfo):
             vol.dbo = self.apfs_db
             if vol == preboot_vol:
                 continue
-            elif vol.is_encrypted:
-                if self.password == '' and self.recovery_key == '':
+            elif vol.is_encrypted and self.apfs_container.is_sw_encrypted: # For hardware encryption(T2), do nothing, it should have been acquired as decrypted..
+                if self.password == '':
                     log.error(f'Skipping vol {vol.volume_name}. The vol is ENCRYPTED and user did not specify a password to decrypt it!' +
                                 f' If you know the password, run mac_apt again with the -p option to decrypt this volume.')
                     continue
-
-                if self.password != '' and self.recovery_key != '':
-                    log.info("You entered a password and a personal recovery key. You only needed to enter one. We will use the password")
 
                 uuid_folders = []
                 preboot_dir = preboot_vol.ListItemsInFolder('/')
@@ -1074,7 +1079,7 @@ class ApfsMacInfo(MacInfo):
                     if preboot_vol.DoesFileExist(plist_path):
                         plist_raw_data = preboot_vol.open(plist_path).readAll()
                         plist_data = biplist.readPlistFromString(plist_raw_data)
-                        decryption_key = decryptor.EncryptedVol(vol, plist_data, self.password, self.recovery_key, log).decryption_key
+                        decryption_key = decryptor.EncryptedVol(vol, plist_data, self.password).decryption_key
                         if decryption_key is None:
                             log.error(f"No decryption key found. Did you enter the right password? Volume '{vol.volume_name}' cannot be decrypted!")
                         else:
@@ -1096,11 +1101,7 @@ class ApfsMacInfo(MacInfo):
                 times['m_time'] = apfs_file_meta.modified
                 times['cr_time'] = apfs_file_meta.created
                 times['a_time'] = apfs_file_meta.accessed
-                times['i_time'] = apfs_file_meta.date_added
-                             
-                                                                          
-                                                                                                                                 
-                                                             
+                times['i_time'] = apfs_file_meta.date_added                            
             else:
                 log.debug('File not found in GetFileMACTimes() query!, path was ' + file_path)
         except Exception as ex:
@@ -1133,11 +1134,7 @@ class ApfsMacInfo(MacInfo):
             log.debug ("APFSMacInfo->Exception from GetFileSize() " + str(ex))
         return error
 
-    def OpenSmallFile(self, path):
-        '''Open files less than 200 MB, returns open file handle'''
-        return self.macos_FS.open(path) #self.macos_FS.OpenSmallFile(path)
-
-    def open(self, path):
+    def Open(self, path):
         '''Open file and return a file-like object'''
         return self.macos_FS.open(path)
 
@@ -1184,7 +1181,7 @@ class ApfsMacInfo(MacInfo):
             if types_to_fetch == EntryType.FILES_AND_FOLDERS:
                 items = [] #[dict(x) for x in all_items if x['type'] in ['File', 'Folder'] ]
                 for x in all_items:
-                    if x['type'] == 'File':
+                    if x['type'] in ('File', 'SymLink'):
                         x['type'] = EntryType.FILES
                         items.append(dict(x))
                     elif x['type'] == 'Folder':
@@ -1193,7 +1190,7 @@ class ApfsMacInfo(MacInfo):
 
             elif types_to_fetch == EntryType.FILES:
                 for x in all_items:
-                    if x['type'] == 'File':
+                    if x['type'] in ('File', 'SymLink'):
                         x['type'] = EntryType.FILES
                         items.append(dict(x))
             else: # Folders
@@ -1346,7 +1343,7 @@ class MountedMacInfo(MacInfo):
             log.exception("Error resolving symlink : " + path)
         return target_path
 
-    def OpenSmallFile(self, path):
+    def Open(self, path):
         try:
             mounted_path = self.BuildFullPath(path)
             log.debug("Trying to open file : " + mounted_path)
@@ -1357,11 +1354,11 @@ class MountedMacInfo(MacInfo):
         return None
 
     def ExtractFile(self, path_in_image, destination_path):
-        source_file = self.OpenSmallFile(path_in_image)
+        source_file = self.Open(path_in_image)
         if source_file:
             size = self.GetFileSize(path_in_image)
 
-            BUFF_SIZE = 1024 * 1024
+            BUFF_SIZE = 20 * 1024 * 1024
             offset = 0
             try:
                 with open(destination_path, 'wb') as f:
@@ -1374,7 +1371,9 @@ class MountedMacInfo(MacInfo):
                     f.flush()
             except (IOError, OSError) as ex:
                 log.exception ("Failed to create file for writing at " + destination_path)
-                return False 
+                source_file.close()
+                return False
+            source_file.close()
             return True
         return False
 
@@ -1488,7 +1487,7 @@ class MountedMacInfo(MacInfo):
         for plist_meta in user_plists:
             if plist_meta['size'] > 0:
                 try:
-                    f = self.OpenSmallFile(users_path + '/' + plist_meta['name'])
+                    f = self.Open(users_path + '/' + plist_meta['name'])
                     if f!= None:
                         plist = biplist.readPlist(f)
                         home_dir = self.GetArrayFirstElement(plist.get('home', ''))
@@ -1513,6 +1512,7 @@ class MountedMacInfo(MacInfo):
                             # There is also accountpolicydata which contains : creation time, failed logon time, failed count, ..
                         else:
                             log.error('Did not find \'home\' in ' + plist_meta['name'])
+                        f.close()
                 except Exception as ex:
                     log.error ("Could not open plist " + plist_meta['name'] + " Exception: " + str(ex))
         #TODO: Domain user uid, gid?
@@ -1627,7 +1627,7 @@ class MountedIosInfo(MountedMacInfo):
         ''' Gets system version information'''
         try:
             log.debug("Trying to get system version from /System/Library/CoreServices/SystemVersion.plist")
-            f = self.OpenSmallFile('/System/Library/CoreServices/SystemVersion.plist')
+            f = self.Open('/System/Library/CoreServices/SystemVersion.plist')
             if f != None:
                 try:
                     plist = biplist.readPlist(f)
@@ -1635,9 +1635,11 @@ class MountedIosInfo(MountedMacInfo):
                     self.os_build = plist.get('ProductBuildVersion', '')
                     self.os_friendly_name = plist.get('ProductName', '')
                     log.info ('iOS version detected is: {} ({}) Build={}'.format(self.os_friendly_name, self.os_version, self.os_build))
+                    f.close()
                     return True
-                except (InvalidPlistException, NotBinaryPlistException) as ex:
+                except (biplist.InvalidPlistException, biplist.NotBinaryPlistException) as ex:
                     log.error ("Could not get ProductVersion from plist. Is it a valid xml plist? Error=" + str(ex))
+                f.close()
             else:
                 log.error("Could not open plist to get system version info!")
         except:
@@ -1702,7 +1704,8 @@ class SqliteWrapper:
         with open (path, 'rb') as f:
             if f.read(16) == b'SQLite format 3\0':
                 ret = True
-        return ret                                               
+        return ret
+
     def __getattr__(self, attr):
         if attr == 'connect': 
             def hooked(path):

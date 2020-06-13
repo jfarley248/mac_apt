@@ -129,11 +129,11 @@ class RecentItem:
             if size == 0: size = len(alias)
             length = struct.unpack('>H',alias[4:6])[0]
             vol_name_len = struct.unpack('>B', alias[10:11])[0]
-            vol_name = alias[11:11+vol_name_len].decode('utf-8')
+            vol_name = alias[11:11+vol_name_len].decode('utf-8', 'backslashreplace')
             vol_date = CommonFunctions.ReadMacHFSTime(struct.unpack('>L',alias[38:42])[0])
-            fs_type = alias[42:44].decode('utf-8')
+            fs_type = alias[42:44].decode('utf-8', 'backslashreplace')
             target_name_len = struct.unpack('>B', alias[50:51])[0]
-            target_name = alias[51:51+target_name_len].decode('utf-8')
+            target_name = alias[51:51+target_name_len].decode('utf-8', 'backslashreplace')
             target_creation_date = CommonFunctions.ReadMacHFSTime(struct.unpack('>L',alias[118:122])[0])
             log.debug('FS_type={} vol_name={} vol_date={} target_name={} target_creation_date={}'.format(fs_type, vol_name, vol_date, target_name,target_creation_date))
             # Now parse tag data
@@ -149,8 +149,8 @@ class RecentItem:
                         elif tag == 0x9: # Network mount information
                             if fs_type != 'H+': # Format is unknown for this!
                                 data = alias[pos + 6:pos + 6 + data_size-2]
-                                protocol = data[0:4].decode('utf-8')
-                                url = data[10:].decode('utf-8').rstrip('\x00')
+                                protocol = data[0:4].decode('utf-8', 'backslashreplace')
+                                url = data[10:].decode('utf-8', 'backslashreplace').rstrip('\x00')
                                 self.URL = url
                                 log.debug('Tag={} Protocol={} Url={}'.format(tag, protocol, url))
                                 return
@@ -158,16 +158,16 @@ class RecentItem:
                             data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0xF: # Unicode volume name
-                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be')
+                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif (tag == 0x10 or tag == 0x11) and data_size == 8:
                             data = CommonFunctions.ReadMacHFSTime(struct.unpack('>L', alias[pos + 6:pos + 10])[0])
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0x12:  #Posix path to volume mountpoint
-                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8')
+                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0x13: #Posix path to volume mountpoint
-                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8')
+                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0xFFFF:
                             break
@@ -211,8 +211,8 @@ class RecentItem:
             if size == 0: size = len(alias)
             length = struct.unpack('>H',alias[4:6])[0]
             vol_checked_date = CommonFunctions.ReadMacHFSTime(struct.unpack('>L',alias[12:16])[0])
-            fs_type = alias[18:20].decode('utf-8')
-            unknown2 = alias[20:22].decode('utf-8')
+            fs_type = alias[18:20].decode('utf-8', 'backslashreplace')
+            unknown2 = alias[20:22].decode('utf-8', 'backslashreplace')
             creation_date = CommonFunctions.ReadMacHFSTime(struct.unpack('>L',alias[34:38])[0])
             log.debug('FS_type={} vol_checked_date={} creation_date={}'.format(fs_type, vol_checked_date, creation_date))
             # Now parse tag data
@@ -225,22 +225,22 @@ class RecentItem:
                         if tag == 0x9: # Network mount information
                             if fs_type != 'H+': # Format is unknown for this!
                                 data = alias[pos + 6:pos + 6 + data_size-2]
-                                protocol = data[0:4].decode('utf-8')
-                                url = data[10:].decode('utf-8')
+                                protocol = data[0:4].decode('utf-8', 'backslashreplace')
+                                url = data[10:].decode('utf-8', 'backslashreplace')
                                 self.URL = url
                                 log.debug('Tag={} Protocol={} Url={}'.format(tag, protocol, url))
                                 return
                         elif tag == 0xE: # Unicode filename of target
-                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be')
+                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0xF: # Unicode volume name
-                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be')
+                            data = alias[pos + 6:pos + 6 + data_size - 2].decode('utf-16be', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0x12:  #Posix path to volume mountpoint
-                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8')
+                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0x13: #Posix path to volume mountpoint
-                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8')
+                            data = alias[pos + 4:pos + 4 + data_size].decode('utf-8', 'backslashreplace')
                             log.debug('Tag={} Data={}'.format(tag, data))
                         elif tag == 0xFFFF:
                             break
@@ -278,7 +278,7 @@ class RecentItem:
                     data = alias[pos] + data
                 pos -= 1
             if reached_start:
-                self.URL = data.decode("utf-8") 
+                self.URL = data.decode("utf-8", 'backslashreplace') 
                 #TODO: Since this isn't a perfect method, sometimes this needs filtering
                 #self.URL.translate(None, '\x09\x00')
             else:
@@ -356,6 +356,8 @@ def PrintAll(recent_items, output_params, source_path):
         name = item.Name
         if name.startswith('file://'):
             name = name[7:]
+        if name == '' and url != '':
+            name = os.path.basename(url)
         data_list.append( [ str(item.Type), name, url, item.Info, item.User, item.Source ] )
 
     WriteList("Recent item information", "RecentItems", data_list, recent_info, output_params, source_path)
@@ -680,7 +682,7 @@ def ProcessSFLFolder(mac_info, user_path, recent_items):
                         log.info('Skipping ' + source_path)
                         continue
                     mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_", False)
-                    f = mac_info.OpenSmallFile(source_path)
+                    f = mac_info.Open(source_path)
                     if f != None:
                         if f_name.endswith('.sfl'):
                             ReadSFLPlist(f, recent_items, source_path, user_name)
@@ -713,7 +715,7 @@ def ProcessSinglePlist(mac_info, source_path, user, recent_items):
 def ProcessSshKnownHostsFile(mac_info, source_path, user_name, recent_items, last_mod_date):
     '''Process known_hosts file found in ~/.ssh/known_hosts'''
     mac_info.ExportFile(source_path, __Plugin_Name, user_name + "_", False)
-    f = mac_info.OpenSmallFile(source_path)
+    f = mac_info.Open(source_path)
     if f:
         data = f.read()
         f.close()
@@ -725,10 +727,10 @@ def ReadKnownHosts(data, source_path, user_name, recent_items, last_mod_date):
         try:
             host = line.split(b' ')[0]
             if host:
-                host = host.decode('utf8')
+                host = host.decode('utf8', 'backslashreplace')
                 ri = RecentItem(host, '', 'File Last Modified on {}'.format(str(last_mod_date)), source_path, RecentType.SSH_KNOWNHOST, user_name)
                 recent_items.append(ri)
-        except:
+        except (OSError, ValueError):
             pass
 
 def ProcessPreferencesFolder(mac_info, recent_items):

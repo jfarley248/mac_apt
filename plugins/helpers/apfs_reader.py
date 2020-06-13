@@ -376,6 +376,11 @@ class ApfsFileSystemParser:
                 # Go to decmpfs_extent block and read uncompressed size
                 logical_size = row[3]
                 #decmpfs_ext_cnid = row[2]
+                if row[4] is None:
+                    log.error('Perhaps a corrupted record in APFS volume, skipping it.'\
+                        'From populate_compressed_files_table(). Got NULL for block number')
+                    log.error(f'DEBUG values of row = {str(row)}')
+                    continue
                 decmpfs = self.volume.get_raw_decrypted_block(row[4], self.encryption_key, limit_size=512) # only read first 512 bytes of block
                 #magic, compression_type, uncompressed_size = struct.unpack('<IIQ', decmpfs[0:16])
                 uncompressed_size = struct.unpack('<Q', decmpfs[8:16])[0]
@@ -548,18 +553,14 @@ class ApfsFileSystemParser:
                         log.exception('Exception trying to read block {}'.format(entry.data.pointer))
                 else:
                     try:
-
                         if entry.data.flags & 1: #OMAP_VAL_DELETED
-                            log.warning("Block values are deleted? ,block={}".format(entry.data.paddr.value))
+                            log.debug("Deleted OMAP block found, block={}".format(entry.data.paddr.value))
                             continue
-
                         if ( entry.data.flags & 4 ) == 4: # ENCRYPTED FLAG
                             newblock = self.volume.read_vol_block(entry.data.paddr.value, self.encryption_key)
                         else:
                             newblock = self.volume.read_vol_block(entry.data.paddr.value)
                         self.read_entries(entry.data.paddr.value, newblock)
-
-
                     except (ValueError, EOFError, OSError):
                         log.exception('Exception trying to read block {}'.format(entry.data.paddr.value))
         elif block.header.subtype == 0:
@@ -746,7 +747,11 @@ class ApfsVolume:
         log.debug("  Vol name  = %s" % super_block.body.volume_name)
         log.debug("  Num files = %d" % super_block.body.num_files)
         log.debug("  Num dirs  = %d" % super_block.body.num_folders)
-        log.debug("  Vol used  = %.2f GB" % float((super_block.body.fs_alloc_count * self.container.apfs.block_size)/(1024.0*1024.0*1024.0)))
+        vol_used_size = super_block.body.fs_alloc_count * self.container.apfs.block_size
+        if vol_used_size < 1073741824: # < 1GiB
+            log.debug("  Vol used  = %.2f MiB" % float((super_block.body.fs_alloc_count * self.container.apfs.block_size)/(1024.0*1024.0)))
+        else:
+            log.debug("  Vol used  = %.2f GiB" % float((super_block.body.fs_alloc_count * self.container.apfs.block_size)/(1024.0*1024.0*1024.0)))
         log.debug('  incompatible_features=0x{:X}, fs_flags=0x{:X}'.format(super_block.body.incompatible_features, super_block.body.fs_flags))
 
         if self.is_encrypted:
@@ -864,29 +869,6 @@ class ApfsVolume:
         elif apfs_file.meta.logical_size > 209715200:
             log.debug('File size > 200 MB')
         return apfs_file
-
-    """ unused function
-    def OpenSmallFile(self, path, apfs_file_meta=None):
-        '''Open small files (<200MB), returns open file handle'''
-        log.debug("Trying to open file : " + path)
-        apfs_file = self.GetFile(path, apfs_file_meta)
-        if apfs_file == None:
-            log.info('File not found! Path was: ' + path)
-            return None
-        if apfs_file.meta.logical_size > 209715200:
-            raise ValueError('File size > 200 MB')
-        try:
-            max_possible_size = apfs_file.meta.logical_size
-            if apfs_file.meta.is_symlink:
-                max_possible_size = 1024 # Symlink is a path, cannot be larger than 1024
-            f = tempfile.SpooledTemporaryFile(max_size=max_possible_size)
-            f.write(apfs_file.readAll())
-            f.seek(0)
-            return f
-        except MemoryError:
-            log.exception("Failed to open file {}".format(path))
-        return None 
-    """
 
     def CopyOutFile(self, path, destination_path):
         '''Copy out file to disk'''
@@ -1278,7 +1260,7 @@ class ApfsSysDataLinkedVolume(ApfsVolume):
         if self.sys_vol.DoesFileExist(firmlink_file_path):
             try:
                 f = self.sys_vol.open(firmlink_file_path)
-                data = [x.decode('utf8') for x in f.read().split(b'\n')]
+                data = [x.decode('utf8', 'backslashreplace') for x in f.read().split(b'\n')]
                 for item in data:
                     if item:
                         source, dest = item.split('\t')

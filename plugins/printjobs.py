@@ -122,7 +122,7 @@ def stringify(binary_str):
     '''Tries to convert a binary string to normal string'''
     if binary_str:
         try:
-            return binary_str.decode('utf8')
+            return binary_str.decode('utf8', 'backslashreplace')
         except AttributeError:
             return str(binary_str)
     return ''
@@ -163,7 +163,7 @@ def get_job_properties(request, filepath):
 
 def parse_cups_file_from_image(mac_info, filepath):
     '''Process individual job file (c00xxx) and return list of properties'''
-    j_file = mac_info.OpenSmallFile(filepath)
+    j_file = mac_info.Open(filepath)
     if j_file != None:
         ippdatas = j_file.read()
         request = pkipplib.IPPRequest(ippdatas)

@@ -136,7 +136,7 @@ def ParseTerminalPlist_NSWindow(plist):
                             if key in ('Tab Contents', 'Tab Contents v2'):
                                 for content in value:
                                     if isinstance(content, bytes):
-                                        contents += content.decode('utf8')
+                                        contents += content.decode('utf8', 'backslashreplace')
                             elif key in ('Tab Working Directory URL String', 'Tab Working Directory URL'):
                                 working_dir = value
     except ValueError as ex:
@@ -216,7 +216,7 @@ def Plugin_Start(mac_info):
             success, windows_plist, error = mac_info.ReadPlist(windows_plist_path)
             if success:
                 try:
-                    all_data_file = mac_info.OpenSmallFile(data_path)
+                    all_data_file = mac_info.Open(data_path)
                     if (all_data_file):
                         all_data = all_data_file.read()
                         Process(windows_plist, all_data, terminals, user.user_name, data_path)

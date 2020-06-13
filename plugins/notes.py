@@ -182,7 +182,7 @@ def ProcessNoteBodyBlob(blob):
         pos += 1
         length, skip = ReadLengthField(blob[pos:])
         pos += skip
-        data = blob[pos : pos + length].decode('utf-8')
+        data = blob[pos : pos + length].decode('utf-8', 'backslashreplace')
         # Skipping the formatting Tags
     except (IndexError, ValueError):
         log.exception('Error processing note data blob')
@@ -329,7 +329,7 @@ def OpenDbFromImage(mac_info, inputPath, user):
         return conn, sqlite
     except sqlite3.Error:
         log.exception ("Failed to open database, is it a valid Notes DB?")
-    return None
+    return None, None
 
 def ProcessNotesDbFromPath(mac_info, notes, source_path, user, version=''):
     if mac_info.IsValidFilePath(source_path):

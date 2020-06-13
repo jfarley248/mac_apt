@@ -11,6 +11,7 @@ import biplist
 import datetime
 import logging
 import os
+import re
 #import pytz
 from enum import IntEnum
 from sqlite3 import Error as sqlite3Error
@@ -100,6 +101,18 @@ class CommonFunctions:
         return ''
 
     @staticmethod
+    def ReadChromeTime(chrome_time): # Chrome time is time epoch beginning 1601/1/1 but in micro-seconds
+        '''Returns datetime object, or empty string upon error'''
+        if chrome_time not in ( 0, None, ''):
+            try:
+                if isinstance(chrome_time, str):
+                    chrome_time = float(chrome_time)
+                return datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=chrome_time)
+            except (ValueError, OverflowError, TypeError) as ex:
+                log.error("ReadChromeTime() Failed to convert timestamp from value " + str(chrome_time) + " Error was: " + str(ex))
+        return ''
+
+    @staticmethod
     def IntFromStr(string, base=10, error_val=0):
         integer = error_val
         try:
@@ -114,7 +127,7 @@ class CommonFunctions:
     @staticmethod
     def GetNextAvailableFileName(filepath):
         '''
-        Checks for existing file and returns next available file name 
+        Checks for existing file and returns full path with next available file name 
         by appending file name with a number. Ex: file01.jpg
         '''
         if os.path.exists(filepath):
@@ -128,6 +141,13 @@ class CommonFunctions:
                 fullpath = filepath_without_ext + '{0:02d}'.format(index) + ext
             filepath = fullpath
         return filepath
+
+    @staticmethod
+    def SanitizeName(filename, replacement_char='_'):
+        '''
+        Removes illegal characters (for windows) from the string passed.
+        '''
+        return re.sub(r'[\\/*?:"<>|\'\r\n]', replacement_char, filename)
 
     @staticmethod
     def GetFileSize(file):
