@@ -17,12 +17,9 @@
 #
 # Script Name  : spotlight_parser.py
 # Author       : Yogesh Khatri
-# Last Updated : 04/01/2019
-# Requirement  : Python 3.7, modules ( lz4, enum34 ) and lzfse library
-#                Dependencies can be installed using the command 'pip install lz4 enum34' 
-#                You will also need to install the lzfse decompression library. Follow the 
-#                instructions here (https://github.com/ydkhatri/mac_apt/tree/master/Libraries_For_Windows)
-#                to install lzfse.pyd. This is dependent on your version of python and platform.
+# Last Updated : 08/07/2020
+# Requirement  : Python 3.7, modules ( lz4, pyliblzfse )
+#                Dependencies can be installed using the command 'pip install lz4 pyliblzfse' 
 # 
 # Purpose      : Parse the Spotlight store.db or .store.db file from mac OSX
 #                These files are located under:
@@ -62,10 +59,10 @@ from enum import IntEnum
 lzfse_capable = False
 
 try:
-    import lzfse
+    import liblzfse
     lzfse_capable = True
 except ImportError:
-    print("lzfse not found. Won't decompress lzfse/lzvn streams")
+    print("liblzfse not found. Won't decompress lzfse/lzvn streams")
 
 __VERSION__ = '0.9.1'
 
@@ -776,7 +773,7 @@ class SpotlightStore:
                         uncompressed = lz4.block.decompress(block_data[20:compressed_block.logical_size], compressed_block.unknown - 20)
                 elif compressed_block.block_type & 0x2000 == 0x2000: # LZFSE compression seen, also perhaps LZVN
                     if not lzfse_capable:
-                        log.error('LZFSE library not available for LZFSE decompression, skipping block..')
+                        log.error('LIBLZFSE library not available for LZFSE decompression, skipping block..')
                         continue
                     if block_data[20:23] == b'bvx':
                         # check for header (bvx1 or bvx2 or bvxn) and footer (bvx$)
@@ -786,7 +783,7 @@ class SpotlightStore:
                         log.debug("0x{:X} - {}".format(chunk_start, header))
                         if header in [b'bvx1', b'bvx2', b'bvxn']:
                             uncompressed_size = struct.unpack('<I', block_data[chunk_start + 4:chunk_start + 8])[0]
-                            uncompressed = lzfse.decompress(block_data[chunk_start : compressed_block.logical_size])
+                            uncompressed = liblzfse.decompress(block_data[chunk_start : compressed_block.logical_size])
                             if len(uncompressed) != uncompressed_size:
                                 log.error('Decompressed size does not match stored value, DecompSize={}, Should_be={}'.format(len(uncompressed), uncompressed_size))
                         elif header == b'bvx-':
@@ -799,7 +796,7 @@ class SpotlightStore:
                 else: # zlib compression
                     #compressed_size = compressed_block.logical_size - 20
                     uncompressed = zlib.decompress(block_data[20:compressed_block.logical_size])
-            except (ValueError,  lz4.block.LZ4BlockError, lzfse.error) as ex:
+            except (ValueError,  lz4.block.LZ4BlockError, liblzfse.error) as ex:
                 log.error("Decompression error for block @ 0x{:X}\r\n{}".format(index[1] * 0x1000 + 20, str(ex)))
                 if len(uncompressed) == 0: continue
             

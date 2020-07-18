@@ -23,7 +23,9 @@ import tempfile
 import time
 import traceback
 from io import BytesIO
+from uuid import UUID
 from plugins.helpers.apfs_reader import *
+from plugins.helpers.darwin_path_generator import GetDarwinPath, GetDarwinPath2
 from plugins.helpers.deserializer import process_nsa_plist
 from plugins.helpers.hfs_alt import HFSVolume
 from plugins.helpers.common import *
@@ -518,7 +520,7 @@ class MacInfo:
                             plist = self.DeserializeNsKeyedPlist(f)
                             f.close()
                             return (True, plist, '')
-                        except:
+                        except Exception as ex:
                             f.close()
                             error = 'Could not read deserialized plist: ' + path + " Error was : " + str(ex)  
                     else:
@@ -539,15 +541,15 @@ class MacInfo:
                                 plist = self.DeserializeNsKeyedPlist(temp_file)
                                 temp_file.close()
                                 return (True, plist, '')
-                            except:
+                            except Exception as ex:
                                 error = 'Could not read deserialized plist: ' + path + " Error was : " + str(ex)
                         else:
                             plist = biplist.readPlistFromString(data)                        
                             return (True, plist, '')
                     except (biplist.InvalidPlistException, biplist.NotBinaryPlistException) as ex:
                         error = 'Could not read plist: ' + path + " Error was : " + str(ex)
-                except IOError as ex:
-                    error = 'IOError while reading plist: ' + path + " Error was : " + str(ex)
+                except OSError as ex:
+                    error = 'OSError while reading plist: ' + path + " Error was : " + str(ex)
             else:
                 error = 'Failed to open file'
         except Exception as ex:
@@ -673,7 +675,7 @@ class MacInfo:
                     if not self.hfs_native.initialized:
                         self.hfs_native.Initialize(self.pytsk_image, self.macos_partition_start_offset)
                     return self.hfs_native.Open(path)
-                except (IOError, OSError, ValueError):
+                except (OSError, ValueError):
                     log.error("Failed to open file: " + path)
                     log.debug("Exception details:\n", exc_info=True)
             else:
@@ -981,9 +983,6 @@ class MacInfo:
     def _GetSystemInfo(self):
         ''' Gets system version information'''
         try:
-            #plist_file = self.macos_FS.open('/System/Library/CoreServices/SystemVersion.plist')
-            #plist_string = plist_file.read_random(0, plist_file.info.meta.size) # This is a small file, so this is fine!
-            #plist = biplist.readPlistFromString(plist_string)
             log.debug("Trying to get system version from /System/Library/CoreServices/SystemVersion.plist")
             f = self.Open('/System/Library/CoreServices/SystemVersion.plist')
             if f != None:
@@ -998,7 +997,6 @@ class MacInfo:
                         elif self.os_version.startswith('10.13'): self.os_friendly_name = 'High Sierra'
                         elif self.os_version.startswith('10.14'): self.os_friendly_name = 'Mojave'
                         elif self.os_version.startswith('10.15'): self.os_friendly_name = 'Catalina'
-                        elif self.os_version.startswith('10.16'): self.os_friendly_name = '-UNKNOWN-'
                         elif self.os_version.startswith('10.0'): self.os_friendly_name = 'Cheetah'
                         elif self.os_version.startswith('10.1'): self.os_friendly_name = 'Puma'
                         elif self.os_version.startswith('10.2'): self.os_friendly_name = 'Jaguar'
@@ -1009,6 +1007,7 @@ class MacInfo:
                         elif self.os_version.startswith('10.7'): self.os_friendly_name = 'Lion'
                         elif self.os_version.startswith('10.8'): self.os_friendly_name = 'Mountain Lion'
                         elif self.os_version.startswith('10.9'): self.os_friendly_name = 'Mavericks'
+                        elif self.os_version.startswith('11.'): self.os_friendly_name = 'Big Sur'
                         else: self.os_friendly_name = 'Unknown version!'
                     log.info ('macOS version detected is: {} ({}) Build={}'.format(self.os_friendly_name, self.os_version, self.os_build))
                     f.close()
@@ -1024,7 +1023,7 @@ class MacInfo:
 
 class ApfsMacInfo(MacInfo):
     def __init__(self, output_params, password):
-        MacInfo.__init__(self, output_params, password)
+        super().__init__(output_params, password)
         self.apfs_container = None
         self.apfs_db = None
         self.apfs_db_path = ''
@@ -1200,11 +1199,105 @@ class ApfsMacInfo(MacInfo):
                         items.append(dict(x))
         return items
 
+class MountedFile(): 
+    # This class is a file-like object, its existence is due to 
+    # Xways Forensics bug with reading mounted files, which can't 
+    # handle f.read() , only f.read(size) works and size must not
+    # go beyond end of file. This class ensures that part.
+    def __init__(self):
+        self.pos = 0
+        self.size = 0
+        self._file = None
+        self.closed = True
+
+    def _check_closed(self):
+        if self.closed:
+            raise ValueError("File is closed!")
+
+    # file methods
+    def open(self, file_path, mode='rb'):
+        self.size = os.path.getsize(file_path)
+        self._file  = open(file_path, mode)
+        self.closed = False
+        return self
+
+    def close(self):
+        self.closed = True
+        if self._file:
+            self._file.close()
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        if self.closed:
+            raise ValueError("seek of closed file")
+        self._file.seek(offset, whence)
+        self.pos = self._file.tell()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if len(line) == 0:
+            raise StopIteration
+        return line
+
+    def readline(self, size=None):
+        ret = b''
+        original_file_pos = self.tell()
+        stop_at_one_iteration = True
+        lf_found = False
+        if size == None:
+            stop_at_one_iteration = False
+            size = 1024
+        buffer = self.read(size)
+        while buffer:
+            new_line_pos = buffer.find(b'\n')
+            if new_line_pos == -1: # not_found, add to line
+                ret += buffer
+            else:
+                ret += buffer[0:new_line_pos + 1]
+                lf_found = True
+            self.seek(original_file_pos + len(ret))
+
+            if stop_at_one_iteration or lf_found: break
+            buffer = self.read(size)
+        return ret
+
+    def readlines(self, sizehint=None):
+        lines = []
+        line = self.readline()
+        while line:
+            lines.append(line)
+            line = self.readline()
+        return lines
+
+    def read(self, size_to_read=None):
+        if self.closed:
+            raise ValueError("read of closed file")
+        data = b''
+        if size_to_read == None:
+            size_to_read = self.size - self.pos
+            if size_to_read > 0:
+                data = self._file.read(size_to_read)
+                self.pos += len(data)
+        elif self.pos >= self.size: # at or beyond EOF, nothing to read
+            pass
+        else:
+            end_pos = self.pos + size_to_read
+            if end_pos > self.size:
+                size_to_read = self.size - self.pos
+            if size_to_read > 0:
+                data = self._file.read(size_to_read)
+                self.pos += len(data)
+        return data
 
 # TODO: Make this class more efficient, perhaps remove some extractions!
 class MountedMacInfo(MacInfo):
     def __init__(self, root_folder_path, output_params):
-        MacInfo.__init__(self, output_params)
+        super().__init__(output_params)
         self.macos_root_folder = root_folder_path
         # TODO: if os.name == 'nt' and len (root_folder_path) == 2 and root_folder_path[2] == ':': self.macos_root_folder += '\\'
         if self.is_linux:
@@ -1233,7 +1326,7 @@ class MountedMacInfo(MacInfo):
 
     def _get_creation_time(self, local_path):
         if self.is_windows:
-            CommonFunctions.ReadUnixTime(os.path.getctime(local_path))
+            return CommonFunctions.ReadUnixTime(os.path.getctime(local_path))
         elif self.is_linux:
             try:
                 t = statx(local_path).get_btime() # New Linux kernel 4+ has this ability
@@ -1309,6 +1402,11 @@ class MountedMacInfo(MacInfo):
             mounted_path = self.BuildFullPath(path)
             dir = os.listdir(mounted_path)
             for entry in dir:
+                # Exclude the mounted encase <file>.Stream which is uncompressed stream of file,
+                #  not needed as we have the actual file
+                if entry.find('\xB7Stream') >= 0 or entry.find('\xB7Resource') >= 0:
+                    log.debug(f'Excluding {entry} as it is raw stream not FILE. If you think this should be included, let the developers know!')
+                    continue
                 newpath = os.path.join(mounted_path, entry)
                 entry_type = EntryType.FOLDERS if os.path.isdir(newpath) else EntryType.FILES
                 item = { 'name':entry, 'type':entry_type, 'size':self._GetFileSizeNoPathMod(newpath, 0)}
@@ -1320,7 +1418,11 @@ class MountedMacInfo(MacInfo):
                     items.append( item )
                 elif types_to_fetch == EntryType.FOLDERS and entry_type == EntryType.FOLDERS:
                     items.append( item )
-                
+        except FileNotFoundError as ex:
+            if str(ex).find('There are no more files') >= 0: # known windows issue on some empty folders!! '[WinError 18] There are no more files:...'
+                pass
+            else:
+                log.debug("Path not found : " + mounted_path)
         except Exception as ex:
             log.exception('')
             if str(ex).find('cannot find the path specified'):
@@ -1338,7 +1440,7 @@ class MountedMacInfo(MacInfo):
             if not self.is_windows:
                 target_path = os.readlink(self.BuildFullPath(path))
             else:
-                target_path = MacInfo.ReadSymLinkTargetPath(path)
+                target_path = super().ReadSymLinkTargetPath(path)
         except:
             log.exception("Error resolving symlink : " + path)
         return target_path
@@ -1347,9 +1449,9 @@ class MountedMacInfo(MacInfo):
         try:
             mounted_path = self.BuildFullPath(path)
             log.debug("Trying to open file : " + mounted_path)
-            file = open(mounted_path, 'rb')
+            file = MountedFile().open(mounted_path, 'rb')
             return file
-        except (IOError, OSError) as ex:
+        except (OSError) as ex:
             log.exception("Error opening file : " + mounted_path)
         return None
 
@@ -1369,7 +1471,7 @@ class MountedMacInfo(MacInfo):
                         offset += len(data)
                         f.write(data)
                     f.flush()
-            except (IOError, OSError) as ex:
+            except (OSError) as ex:
                 log.exception ("Failed to create file for writing at " + destination_path)
                 source_file.close()
                 return False
@@ -1397,131 +1499,116 @@ class MountedMacInfo(MacInfo):
         '''Gets DARWIN_*_DIR paths '''
         if not self.is_windows:
             # Unix/Linux or Mac mounted disks should preserve UID/GID, so we can read it normally from the files.
-            MacInfo._GetDarwinFoldersInfo(self)
+            super()._GetDarwinFoldersInfo()
             return
+        
+        for user in self.users:
+            if user.UUID != '' and user.UID not in ('', '-2', '1', '201'): # Users nobody, daemon, guest don't have one
+                darwin_path = '/private/var/folders/' + GetDarwinPath2(user.UUID, user.UID)
+                if not self.IsValidFolderPath(darwin_path):
+                    darwin_path = '/private/var/folders/' + GetDarwinPath(user.UUID, user.UID)
+                    if not self.IsValidFolderPath(darwin_path):
+                        if user.user_name.startswith('_') and user.UUID.upper().startswith('FFFFEEEE'):
+                            pass
+                        else:
+                            log.warning(f'Could not find DARWIN_PATH for user {user.user_name}, uid={user.UID}, uuid={user.UUID}')
+                        continue
+                user.DARWIN_USER_DIR       = darwin_path + '/0'
+                user.DARWIN_USER_CACHE_DIR = darwin_path + '/C'
+                user.DARWIN_USER_TEMP_DIR  = darwin_path + '/T'
 
-        users_dir = self.ListItemsInFolder('/private/var/folders', EntryType.FOLDERS)
-        # In /private/var/folders/  --> Look for --> xx/yyyyyy/C/com.apple.sandbox/sandbox-cache.db
-        for unknown1 in users_dir:
-            unknown1_name = unknown1['name']
-            unknown1_dir = self.ListItemsInFolder('/private/var/folders/' + unknown1_name, EntryType.FOLDERS)
-            for unknown2 in unknown1_dir:
-                unknown2_name = unknown2['name']
-                found_home = False
-                found_user = False
-                home = ''
-                # This is yyyyyy folder
-                path_to_sandbox_db = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/C/com.apple.sandbox/sandbox-cache.db'
-                if self.IsValidFilePath(path_to_sandbox_db) and self.GetFileSize(path_to_sandbox_db): # This does not always exist or it may be zero in size!
-                    sqlite = SqliteWrapper(self)
-                    try:
-                        conn = sqlite.connect(path_to_sandbox_db)
-                        try:
-                            if CommonFunctions.TableExists(conn, 'entry'):
-                                cursor = conn.execute("select params from entry where params like '%HOME%'") # This query is for El Capitan, table 'entry' does not exist on Yosemite
-                                for row in cursor:
-                                    if found_home: break
-                                    try:
-                                        data_dict = ast.literal_eval(str(row[0]))
-                                        for item in data_dict:
-                                            if item.upper().lstrip('_').rstrip('_') in ('HOME', 'HOME_DIR'):
-                                                home = data_dict[item]
-                                                if home != '':
-                                                    found_home = True
-                                                    break
-                                    except Exception as ex:
-                                        log.error ("Unknown error while processing query output")
-                                        log.debug("Exception details:\n", exc_info=True) #traceback.print_exc()
-                            #    cursor = conn.execute("select params from entry where params like '%USER%'") # This query is for El Capitan, table 'entry' does not exist on Yosemite
-                            #     for row in cursor:
-                            #         if found_user: break;
-                            #         try:
-                            #             data_dict = ast.literal_eval(str(row[0]))
-                            #             for item in data_dict:
-                            #                 #print ('item =' + item + ' -> ' + data_dict[item])
-                            #                 if item.upper().lstrip('_').rstrip('_') in ('HOME', 'HOME_DIR'):
-                            #                     home = data_dict[item]
-                            #                     if home != '':
-                            #                         found_home = True
-                            #                         break;
-                            #         except Exception as ex:
-                            #             log.error ("Unknown error while processing query output")
-                            #             log.debug("Exception details:\n", exc_info=True) #traceback.print_exc()   
-                                     
-                            elif CommonFunctions.TableExists(conn, 'params'):
-                                cursor = conn.execute("select distinct value from params where key like '%HOME%'  and value not like ''") # This query is for Yosemite
-                                for row in cursor:
-                                    home = row[0]
-                                    found_home = True
-                                    break;
-                            else:
-                                log.critical ("Unknown database type or bad database! Could not get DARWIN_USER_* paths!")
-                        except sqlite3.Error as ex:
-                            log.error ("Failed to execute query on db : {} Error Details:{}".format(path_to_sandbox_db, str(ex)) )
-                        conn.close()
-                    except sqlite3.Error as ex:
-                        log.error ("Failed to connect to db " + str(ex))
-                #log.debug('found_home={} found_user={}  HOME={}'.format(found_home, found_user, home))
-                if found_home:# and found_user:
-                    user_info = UserInfo()
-                    user_info.home_dir = home
-                    user_info.DARWIN_USER_DIR       = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/0'
-                    user_info.DARWIN_USER_CACHE_DIR = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/C'
-                    user_info.DARWIN_USER_TEMP_DIR  = '/private/var/folders/' + unknown1_name + '/' + unknown2_name + '/T'
-                    user_info._source = path_to_sandbox_db
-                    self.users.append(user_info)
-
-    def _GetUserInfo(self):
+    def _GetDomainUserInfo(self):
         if not self.is_windows:
             # Unix/Linux or Mac mounted disks should preserve UID/GID, so we can read it normally from the files.
-            MacInfo._GetUserInfo(self)
+            super()._GetDomainUserInfo()
             return
-
-        # on windows
-        self._GetDarwinFoldersInfos() # This probably does not apply to OSX < Mavericks !
-
-        #Get user info from plists under: \private\var\db\dslocal\nodes\Default\users\<USER>.plist
-        #TODO - make a better plugin that gets all user & group info
-        users_path  = '/private/var/db/dslocal/nodes/Default/users'
-        user_plists = self.ListItemsInFolder(users_path, EntryType.FILES)
-        for plist_meta in user_plists:
-            if plist_meta['size'] > 0:
-                try:
-                    f = self.Open(users_path + '/' + plist_meta['name'])
-                    if f!= None:
-                        plist = biplist.readPlist(f)
-                        home_dir = self.GetArrayFirstElement(plist.get('home', ''))
-                        if home_dir != '':
-                            log.info('{} :  {}'.format(plist_meta['name'], home_dir))
-                            if home_dir.startswith('/var/'): home_dir = '/private' + home_dir # in mac /var is symbolic link to /private/var
-                            # find it in self.users which was populated by _GetDarwinFoldersInfo()
-                            target_user = None
-                            for user in self.users:
-                                if user.home_dir == home_dir:
-                                    target_user = user
-                                    break
-                            if target_user == None:
-                                target_user = UserInfo()
-                                self.users.append(target_user)
-                            target_user.UID = str(self.GetArrayFirstElement(plist.get('uid', '')))
-                            target_user.GID = str(self.GetArrayFirstElement(plist.get('gid', '')))
-                            target_user.UUID = self.GetArrayFirstElement(plist.get('generateduid', ''))
-                            target_user.home_dir = home_dir
-                            target_user.user_name = self.GetArrayFirstElement(plist.get('name', ''))
-                            target_user.real_name = self.GetArrayFirstElement(plist.get('realname', ''))
-                            # There is also accountpolicydata which contains : creation time, failed logon time, failed count, ..
+        log.debug('Trying to get domain profiles from /Users/')
+        domain_users = []
+        users_folder = self.ListItemsInFolder('/Users/', EntryType.FOLDERS)
+        for folder in users_folder:
+            folder_name = folder['name']
+            if folder_name in ('Shared', 'root'):
+                continue
+            found_user = False
+            for user in self.users:
+                if user.user_name == folder_name:
+                    found_user = True # Existing local user
+                    break
+            if found_user: continue
+            else:
+                log.info(f'Found a domain user {folder_name} or deleted user?')
+                target_user = UserInfo()
+                domain_users.append(target_user)
+                target_user.home_dir = '/Users/' + folder_name
+                target_user.user_name = folder_name
+                target_user.real_name = folder_name
+                target_user._source = '/Users/' + folder_name
+        if domain_users:
+            known_darwin_paths = set()
+            for user in self.users:
+                if user.UID and user.UUID and not user.UID.startswith('-'):
+                    known_darwin_paths.add('/private/var/folders/' + GetDarwinPath(user.UUID, user.UID)) # They haven't been populated yet in user!
+                    known_darwin_paths.add('/private/var/folders/' + GetDarwinPath2(user.UUID, user.UID))
+            # try to get darwin_cache folders
+            var_folders = self.ListItemsInFolder('/private/var/folders', EntryType.FOLDERS)
+            for level_1 in var_folders:
+                name_1 = level_1['name']
+                var_folders_level_2 = self.ListItemsInFolder(f'/private/var/folders/{name_1}', EntryType.FOLDERS)
+                for level_2 in var_folders_level_2:
+                    darwin_path = f'/private/var/folders/{name_1}/' + level_2['name']
+                    if darwin_path in known_darwin_paths:
+                        continue
+                    else:
+                        matched_darwin_path_to_user = False
+                        font_reg_db = darwin_path + '/C/com.apple.FontRegistry/fontregistry.user'
+                        if self.IsValidFilePath(font_reg_db):
+                            try:
+                                sqlite_wrapper = SqliteWrapper(self)
+                                db = sqlite_wrapper.connect(font_reg_db)
+                                if db:
+                                    cursor = db.cursor()
+                                    cursor.execute('SELECT path_column from dir_table WHERE domain_column=1')
+                                    user_path = ''
+                                    for row in cursor:
+                                        user_path = row[0]
+                                        break
+                                    cursor.close()
+                                    db.close()
+                                    if user_path:
+                                        if user_path.startswith('/Users/'):
+                                            username = user_path.split('/')[2]
+                                            for dom_user in domain_users:
+                                                if dom_user.user_name == username:
+                                                    dom_user.DARWIN_USER_DIR = darwin_path + '/0'
+                                                    dom_user.DARWIN_USER_TEMP_DIR = darwin_path + '/T'
+                                                    dom_user.DARWIN_USER_CACHE_DIR = darwin_path + '/C'
+                                                    log.debug(f'Found darwin path for user {username}')
+                                                    matched_darwin_path_to_user = True
+                                                    # Try to get uid now.
+                                                    if self.IsValidFolderPath(dom_user.DARWIN_USER_DIR + '/com.apple.LaunchServices.dv'):
+                                                        for item in self.ListItemsInFolder(dom_user.DARWIN_USER_DIR + '/com.apple.LaunchServices.dv', EntryType.FILES):
+                                                            name = item['name']
+                                                            if name.startswith('com.apple.LaunchServices.trustedsignatures-') and name.endswith('.db'):
+                                                                dom_user.UID = name[43:-3]
+                                                                break
+                                                    break
+                                        else:
+                                            log.error(f'user profile path was non-standard - {user_path}')
+                                    else:
+                                        log.error('Query did not yield any output!')
+                                    if not matched_darwin_path_to_user:
+                                        log.error(f'Could not find mapping for darwin folder {darwin_path} to user')
+                            except sqlite3.Error:
+                                log.exception(f'Error reading {font_reg_db}, Cannot map darwin folder to user profile!')
                         else:
-                            log.error('Did not find \'home\' in ' + plist_meta['name'])
-                        f.close()
-                except Exception as ex:
-                    log.error ("Could not open plist " + plist_meta['name'] + " Exception: " + str(ex))
-        #TODO: Domain user uid, gid?
+                            log.error(f'Could not find {font_reg_db}, Cannot map darwin folder to user profile!')
+            self.users.extend(domain_users)
 
 class MountedMacInfoSeperateSysData(MountedMacInfo):
     '''Same as MountedMacInfo, but takes into account two volumes (SYS, DATA) mounted separately'''
 
     def __init__(self, sys_root_folder_path, data_root_folder_path, output_params):
-        MountedMacInfo.__init__(self, sys_root_folder_path, output_params)
+        super().__init__(sys_root_folder_path, output_params)
         self.sys_volume_folder = sys_root_folder_path  # New in 10.15, a System read-only partition
         self.data_volume_folder = data_root_folder_path # New in 10.15, a separate Data partition
         self.firmlinks = {}
@@ -1536,7 +1623,7 @@ class MountedMacInfoSeperateSysData(MountedMacInfo):
             mounted_path = super().BuildFullPath(firmlink_file_path)
             log.debug("Trying to open file : " + mounted_path)
             f = open(mounted_path, 'rb')
-        except (IOError, OSError) as ex:
+        except (OSError) as ex:
             log.exception("Error opening file : " + mounted_path)
             raise ValueError('Fatal : Could not find/read Firmlinks file in System volume!')
 
@@ -1580,7 +1667,6 @@ class MountedMacInfoSeperateSysData(MountedMacInfo):
                 log.debug("Searched for {}".format('/' + '/'.join(path_parts[:index + 1])))
                 dest = self.firmlinks.get('/' + '/'.join(path_parts[:index + 1]), None)
                 if dest != None:
-                    log.debug("FOUND**********")
                     found_in_firmlink = True
                     vol_folder = self.data_volume_folder
                     path = dest
@@ -1603,9 +1689,30 @@ class MountedMacInfoSeperateSysData(MountedMacInfo):
         log.debug("req={} final={}".format(path_in_image, full_path))
         return full_path
 
+class ApplicationInfo:
+    def __init__(self, app_identifier):
+        self.bundle_container_path = '' # /private/var/containers/Bundle/UUID1 ## Not for buitin apps
+        self.bundle_identifier = app_identifier # com.xxx.yyy
+        self.bundle_path = '' # <bundle_container_path>/Appname.app  or /Applications/Appname.app
+        self.sandbox_path = '' # /private/var/mobilce/Containers/Data/Application/UUID2
+
+        self.uninstall_date = None
+        self.bundle_uuid = None
+        self.data_uuid = None
+
+        # From <bundle_path>/Info.plist
+        self.main_icon_path = '' # CFBundleIcons/CFBundlePrimaryIcon/CFBundleIconFiles (array)
+        self.bundle_display_name = '' #CFBundleDisplayName  # Main App Name as it appears to user
+        self.bundle_version = '' # CFBundleShortVersionString
+        self.hidden = False # SBAppTags
+
+        self.source = ''
+
+
 class MountedIosInfo(MountedMacInfo):
     def __init__(self, root_folder_path, output_params):
-        MountedMacInfo.__init__(self, root_folder_path, output_params)
+        super().__init__(root_folder_path, output_params)
+        self.apps = []
     
     def GetUserAndGroupIDForFile(self, path):
         raise NotImplementedError()
@@ -1645,6 +1752,112 @@ class MountedIosInfo(MountedMacInfo):
         except:
             log.exception("Unknown error from _GetSystemInfo()")
         return False
+
+    def _GetAppDetails(self):
+        '''Get app name, path, version, uuid, container path and other info'''
+        app_state_db = '/private/var/mobile/Library/FrontBoard/applicationState.db'
+        if self.IsValidFilePath(app_state_db):
+            self.ExportFile(app_state_db, 'APPS')
+            try:
+                sqlite = SqliteWrapper(self)
+                conn = sqlite.connect(app_state_db)
+                if conn:
+                    log.debug ("Opened DB {} successfully".format(os.path.basename(app_state_db)))
+                    try:
+                        conn.row_factory = sqlite3.Row
+                        query = \
+                        """
+                        SELECT application_identifier_tab.application_identifier as ai, key_tab.key, value 
+                        FROM application_identifier_tab, key_tab, kvs 
+                        WHERE kvs.application_identifier=application_identifier_tab.id 
+                            AND kvs.key=key_tab.id 
+                        ORDER BY ai
+                        """
+                        cursor = conn.execute(query)
+                        apps = []
+                        last_app_name = ''
+                        app_info = None
+                        try:
+                            for row in cursor:
+                                app = row['ai']
+                                key = row['key']
+                                val = row['value']
+                                if last_app_name != app: # new app found
+                                    app_info = ApplicationInfo(app)
+                                    apps.append(app_info)
+                                    last_app_name = app
+                                    app_info.source = app_state_db
+                                # Process key/val pairs
+                                if key == '__UninstallDate':
+                                    if val:
+                                        temp_file = BytesIO(val)
+                                        success, plist, error = CommonFunctions.ReadPlist(temp_file)
+                                        if success:
+                                            if isinstance(plist, datetime.datetime):
+                                                app_info.uninstall_date = plist
+                                            else:
+                                                log.error('Uninstall plist is not in the expected form, plist was ' + str(plist))
+                                        else:
+                                            log.error(f'Failed to read "compatibilityInfo" for {ai}. {error}')
+                                        temp_file.close()
+                                elif key == 'XBApplicationSnapshotManifest':
+                                    pass
+                                elif key == 'compatibilityInfo':
+                                    if val:
+                                        temp_file = BytesIO(val)
+                                        success, plist, error = CommonFunctions.ReadPlist(temp_file, True)
+                                        if success:
+                                            app_info.bundle_container_path = plist.get('bundleContainerPath', '')
+                                            if app_info.bundle_container_path:
+                                                app_info.bundle_uuid = UUID(os.path.basename(app_info.bundle_container_path))
+                                            app_info.bundle_path = plist.get('bundlePath', '')
+                                            app_info.sandbox_path = plist.get('sandboxPath', '')
+                                            if app_info.sandbox_path:
+                                                app_info.data_uuid = UUID(os.path.basename(app_info.sandbox_path))
+                                            self._ReadInfoPlist(app_info, app_info.bundle_path + '/Info.plist')
+                                            app_info.source += ',' + app_info.bundle_path + '/Info.plist'
+                                        else:
+                                            log.error(f'Failed to read "compatibilityInfo" for {ai}. {error}')
+                                        temp_file.close()
+                            conn.close()
+                            for app in apps: # add app to main list if properties are not empty
+                                if not app.bundle_display_name and not app.bundle_path \
+                                    and not app.sandbox_path and not app.uninstall_date \
+                                    and not app.bundle_display_name:
+                                    pass
+                                else:
+                                    self.apps.append(app)
+                            return True
+                        except sqlite3.Error as ex:
+                            log.exception("Db cursor error while reading file " + app_state_db)
+                    except sqlite3.Error as ex:
+                        log.error ("Sqlite error - \nError details: \n" + str(ex))
+                    conn.close()
+            except sqlite3.Error as ex:
+                log.error ("Failed to open {}, is it a valid DB? Error details: ".format(os.path.basename(app_state_db)) + str(ex))
+                return False
+        else:
+            log.error(f'Could not find {app_state_db}, cannot get Application information!')
+        return False
+
+    def _ReadInfoPlist(self, app_info, plist_path):
+        if self.IsValidFilePath(plist_path):
+            success, plist, error = self.ReadPlist(plist_path)
+            if success:
+                app_info.bundle_display_name = plist.get('CFBundleDisplayName', '')
+                if app_info.bundle_display_name == '':
+                    app_info.bundle_display_name = plist.get('CFBundleName', '')
+                app_info.bundle_version = plist.get('CFBundleShortVersionString', '')
+                try:
+                    icon = plist['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconFiles'][0]
+                    app_info.main_icon_path = app_info.bundle_path + '/' + icon
+                except (KeyError, ValueError, IndexError, TypeError) as ex:
+                    log.debug(ex)
+                app_info.hidden = True if 'hidden' in plist.get('SBAppTags', []) else False
+            else:
+                log.error(f'Failed to read {plist_path}. {error}')
+        else:
+            log.error(f'File not found: {plist_path}')
 
 class SqliteWrapper:
     '''

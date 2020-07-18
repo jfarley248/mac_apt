@@ -21,7 +21,7 @@ import sqlite3
 __Plugin_Name = "CHROME"
 __Plugin_Friendly_Name = "Chrome"
 __Plugin_Version = "1.0"
-__Plugin_Description = "Read Chrome History, Top Sites, Downloads, Current/Last Tabs/Sessions and Extension info"
+__Plugin_Description = "Read Chrome History, Top Sites, Downloads, Tabs/Sessions and Extension info"
 __Plugin_Author = "Yogesh Khatri"
 __Plugin_Author_Email = "yogesh@swiftforensics.com"
 
@@ -105,7 +105,8 @@ def OpenDbFromImage(mac_info, inputPath, user):
     try:
         sqlite = SqliteWrapper(mac_info)
         conn = sqlite.connect(inputPath)
-        log.debug ("Opened database successfully")
+        if conn:
+            log.debug ("Opened database successfully")
         return conn, sqlite
     except sqlite3.Error:
         log.exception ("Failed to open database, is it a valid DB?")

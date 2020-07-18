@@ -20,7 +20,7 @@ __Plugin_Version = "1.0"
 __Plugin_Description = "Reads Terminal (bash & zsh) sessions & history for every user"
 __Plugin_Author = "Yogesh Khatri"
 __Plugin_Author_Email = "yogesh@swiftforensics.com"
-__Plugin_Modes = "MACOS"
+__Plugin_Modes = "MACOS,IOS"
 __Plugin_ArtifactOnly_Usage = ""
 
 log = logging.getLogger('MAIN.' + __Plugin_Name) # Do not rename or remove this ! This is the logger object
@@ -182,18 +182,33 @@ def Plugin_Start(mac_info):
         if mac_info.IsValidFolderPath(source_folder):
             ProcessBashSessionsForUser(mac_info, bash_sessions, source_folder, user_name)
         
-        #Export .bash_history or .zsh_history file
-        bash_history_path = user.home_dir + ('/.sh_history' if user_name == 'root' else '/.bash_history')
+        #Export .bash_history, .sh_history or .zsh_history file
+        sh_history_path = user.home_dir + '/.sh_history'
+        bash_history_path = user.home_dir + '/.bash_history'
         zsh_history_path = user.home_dir + '/.zsh_history'
         if mac_info.IsValidFilePath(bash_history_path):
             ReadHistoryFile(mac_info, bash_history_path, 'BASH_HISTORY', bash_sessions, user_name)
         if mac_info.IsValidFilePath(zsh_history_path):
             ReadHistoryFile(mac_info, zsh_history_path, 'ZSH_HISTORY', bash_sessions, user_name)
+        if mac_info.IsValidFilePath(sh_history_path):
+            ReadHistoryFile(mac_info, sh_history_path, 'SH_HISTORY', bash_sessions, user_name)
 
     if len(bash_sessions) > 0:
         PrintAll(bash_sessions, mac_info.output_params, '')
     else:
         log.info('No terminal sessions or history found!')
-    
+
+def Plugin_Start_Ios(ios_info):
+    '''Entry point for ios_apt plugin'''
+    bash_sessions = []
+    bash_history_path = '/private/var/mobile/.bash_history'
+    if ios_info.IsValidFilePath(bash_history_path):
+        ReadHistoryFile(ios_info, bash_history_path, 'BASH_HISTORY', bash_sessions, '')
+
+    if len(bash_sessions) > 0:
+        PrintAll(bash_sessions, ios_info.output_params, '')
+    else:
+        log.info('No terminal history found!')
+
 if __name__ == '__main__':
     print("This plugin is a part of a framework and does not run independently on its own!")

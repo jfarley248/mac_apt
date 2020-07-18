@@ -22,7 +22,7 @@ __Plugin_Description = "Reads configured internet account (iCloud, Google, Linke
 __Plugin_Author = "Yogesh Khatri"
 __Plugin_Author_Email = "yogesh@swiftforensics.com"
 
-__Plugin_Modes = "MACOS,ARTIFACTONLY"
+__Plugin_Modes = "MACOS,ARTIFACTONLY,IOS"
 __Plugin_ArtifactOnly_Usage = 'This module parses configured internet accounts such as iCloud, Google, Linkedin, facebook, Twitter used by Mail, Contacts, Calendar and other apps. Data is retreived from the database file found at: /Users/$USER/Library/Preferences/MobileMeAccounts.plist or since Mavericks: /Users/$USER/Library/Accounts/AccountsX.sqlite where X = 3 or 4\r\nPlease provide the plist file(s) or the sqlite database(s) to process'
 
 log = logging.getLogger('MAIN.' + __Plugin_Name) # Do not rename or remove this ! This is the logger object
@@ -101,7 +101,8 @@ def OpenDbFromImage(mac_info, inputPath, user):
     try:
         sqlite = SqliteWrapper(mac_info)
         conn = sqlite.connect(inputPath)
-        log.debug ("Opened database successfully")
+        if conn:
+            log.debug ("Opened database successfully")
         return conn, sqlite
     except sqlite3.Error as ex:
         log.exception ("Failed to open database, is it a valid Accounts DB?")
@@ -141,7 +142,6 @@ def Plugin_Start(mac_info):
     accounts = []
     account_plist_rel_path = '{}/Library/Preferences/MobileMeAccounts.plist' # older
     account_sqlite_rel_path = '{0}/Library/Accounts/Accounts{1}.sqlite' # Accounts3 Seen in Mavericks and above, Accounts4 in High Sierra
-    version = mac_info.GetVersionDictionary()
     for user in mac_info.users:
         if user.home_dir == '/private/var/empty': continue # Optimization, nothing should be here!
         plist_path = account_plist_rel_path.format(user.home_dir)
@@ -186,6 +186,23 @@ def Plugin_Start_Standalone(input_files_list, output_params):
             PrintAll(accounts, output_params, input_path)
         else:
             log.info('No accounts found in {}'.format(input_path))
+
+def Plugin_Start_Ios(ios_info):
+    '''Entry point for ios_apt plugin'''
+    accounts = []
+    account_sqlite_rel_path = '/private/var/mobile/Library/Accounts/Accounts{}.sqlite' # Accounts3 Seen in ios 12
+
+    # Process Sqlite db
+    for version in range(1, 5):
+        sqlite_path = account_sqlite_rel_path.format(version)
+        if ios_info.IsValidFilePath(sqlite_path):
+            ios_info.ExportFile(sqlite_path, __Plugin_Name)
+            ProcessDbFromPath(ios_info, accounts, sqlite_path, '')
+
+    if len(accounts) > 0:
+        PrintAll(accounts, ios_info.output_params, '')
+    else:
+        log.info('No accounts found')
 
 if __name__ == '__main__':
     print ("This plugin is a part of a framework and does not run independently on its own!")
